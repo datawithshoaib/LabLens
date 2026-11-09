@@ -1,0 +1,1 @@
+"""LabLens application package."""

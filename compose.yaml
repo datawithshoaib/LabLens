@@ -1,0 +1,157 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17-trixie
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.10.2-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '$${REDIS_PASSWORD}' ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      API_V1_PREFIX: ${API_V1_PREFIX:-/api/v1}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/uploads}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_ENDPOINT_URL: ${STORAGE_ENDPOINT_URL:-}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_SERVER_SIDE_ENCRYPTION: ${STORAGE_SERVER_SIDE_ENCRYPTION:-AES256}
+      STORAGE_KMS_KEY_ID: ${STORAGE_KMS_KEY_ID:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_ALGORITHMS: ${OIDC_ALGORITHMS:-["RS256"]}
+      DEVELOPMENT_AUTH_TOKEN: ${DEVELOPMENT_AUTH_TOKEN:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-100}
+      UPLOAD_LIMIT_PER_HOUR: ${UPLOAD_LIMIT_PER_HOUR:-10}
+    command: ["sh", "-c", "alembic upgrade head && uvicorn lablens.main:app --host 0.0.0.0 --port 8000 --workers 2"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - report_uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-filesystem}
+      STORAGE_DIR: ${STORAGE_DIR:-/data/uploads}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+      STORAGE_ENDPOINT_URL: ${STORAGE_ENDPOINT_URL:-}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+      STORAGE_SERVER_SIDE_ENCRYPTION: ${STORAGE_SERVER_SIDE_ENCRYPTION:-AES256}
+      STORAGE_KMS_KEY_ID: ${STORAGE_KMS_KEY_ID:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_ALGORITHMS: ${OIDC_ALGORITHMS:-["RS256"]}
+      DEVELOPMENT_AUTH_TOKEN: ${DEVELOPMENT_AUTH_TOKEN:-}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-10485760}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-100}
+    command: ["arq", "lablens.worker.WorkerSettings"]
+    volumes:
+      - report_uploads:/data/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      API_INTERNAL_URL: http://api:8000/api/v1
+      AUTH_TRUST_HOST: "true"
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_OIDC_ISSUER: ${AUTH_OIDC_ISSUER:-}
+      AUTH_OIDC_CLIENT_ID: ${AUTH_OIDC_CLIENT_ID:-}
+      AUTH_OIDC_CLIENT_SECRET: ${AUTH_OIDC_CLIENT_SECRET:-}
+      AUTH_OIDC_TOKEN_ENDPOINT: ${AUTH_OIDC_TOKEN_ENDPOINT:-}
+      AUTH_OIDC_AUDIENCE: ${AUTH_OIDC_AUDIENCE:-}
+      AUTH_OIDC_SCOPE: ${AUTH_OIDC_SCOPE:-openid profile email offline_access}
+      AUTH_REDIS_URL: ${AUTH_REDIS_URL}
+      DEVELOPMENT_AUTH_TOKEN: ${DEVELOPMENT_AUTH_TOKEN:-}
+      APP_ENV: ${APP_ENV:-development}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  report_uploads:
